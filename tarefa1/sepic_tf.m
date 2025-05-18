@@ -1,0 +1,143 @@
+clc ;
+clear ;
+
+% The amount that the SEPIC converters step up or down the voltage depends on the Duty Cycle and the parasitic elements in the circuit. 
+% The output of an IDEAL SEPIC CONVERTER IS
+% Vo = D*Vi/(1-D) ;
+
+% Due Diode parasitic energy
+
+% Vo + Vd = D*Vi/(1-D) ;
+% D = Vo+Vd/(Vi+Vo+Vd) ; 
+
+
+%% variable definitions
+
+Vi = 50  ; % Input voltage [V]
+Vo = 100 ; % Output voltage [Vo]
+
+fs = 50e3 ; % 1/Ts [kHz] 
+Ts = (1/fs) ; % secs
+
+D = Vo/(Vi+Vo) ; 
+Vs  = Vi*D/(1-D);
+
+Po = 250 ; % W
+
+Vrms = sqrt(Vi);
+Vpeak = Vrms * sqrt(2);
+Amplitude = Vpeak;
+
+Iin = Po/Vi ;
+I_l1 = Iin;
+
+Io = Po/Vo ;
+I_l2 = Io;
+
+Rload = Vo/Io;       % load resistance (Ohm)
+R = Rload ;
+
+delta_I_L_p = 0.2 ; % 20 % percentage
+delta_I_l1 = I_l1 * delta_I_L_p ;
+delta_I_l2 = I_l2 * delta_I_L_p ;
+
+L1 = (Vi*D)/(delta_I_l1*fs) ;
+L2 = (Vi*D)/(delta_I_l2*fs) ;
+
+delta_V_C1_p = .20 ; % 20 % percentage
+delta_V_C1 = Vi * delta_V_C1_p; 
+delta_Vo = 5/100 ; % 5% 
+
+delta_V_C2 = Vo * delta_Vo; 
+
+C1 = (Io * D) / (delta_V_C1 * fs);       % Capacitor C1 (F)
+C2 = (Io * D) / (delta_V_C2 * fs);       % Capacitor C1 (F)
+
+
+%% sepic validation
+
+c = Vs/(1-D)^2
+
+% Define the numerator and denominator of the transfer function
+numerator = [- C1*IL1*L1*L2*R - C1*IL2*L1*L2*R, C1*L1*R*Vi + C1*L2*R*Vi + C1*L1*R*Vo + C1*L2*R*Vo, - C1*L1*R*Vi*D - C1*L2*R*Vi*D - C1*L1*R*Vo*D - C1*L2*R*Vo*D, IL1*L2*R + IL2*L2*R - IL1*L2*R*D - IL2*L2*R*D, - R*Vi - R*Vo + R*Vi*D + R*Vo*D];
+
+denominator = [C1*C2*L1*L2*R, C1*L1*L2, ...
+              C1*L1*R + C1*L2*R + C1*L1*R*D^2 + C1*L2*R*D^2, ...
+               C2*L1*R*D^2 + C2*L2*R*D^2 - 2*C1*L1*R*D, ...
+               -2*C1*L2*R*D - C2*L1*R*D - C2*L2*R*D, ...
+              (L1*D^2 - L2*D - L1*D + L2*D^2)*s - R + 2*R*D - R*D^2];
+
+sys = tf([numerador], [denominador]);
+figure(1)
+bode(sys);
+title('Diagrama de Bode - Conversor SEPIC');
+grid on;
+hold on;
+
+%% sepic simulink
+open_system('sepicconverter.slx');
+% Assign values to Simulink workspace
+assignin('base', 'Vi', Vi);
+assignin('base', 'Vo', Vo);
+assignin('base', 'L1', L1);
+assignin('base', 'L2', L2);
+assignin('base', 'C1', C1);
+assignin('base', 'C2', C2);
+assignin('base', 'Rload', Rload);
+assignin('base', 'D', D);
+
+% simOut = sim('sepicconverter.slx');
+simOut = sim('sepicconverter.slx', 'StopTime', '0.01'); % 10 ms simulation
+time = simOut.tout;
+output_voltage = simOut.yout.getElement('Vout').Values.Data;
+
+% Plot output voltage
+figure;
+plot(time, output_voltage);
+xlabel('Time (s)');
+ylabel('Output Voltage (V)');
+title('SEPIC Converter Output Voltage');
+grid on;
+
+
+
+%%
+numerador = [0 -L1*Vs/(Vs*D)*(1-D)^2 Vs]; 
+denominador = [1]
+sys0 = tf([numerador], [denominador]);
+
+sys1 = tf([Vi/(1-D)],[(1-D)^2, (L1+L2)/R, L1*C1])
+
+figure(2)
+bode(sys1);
+title('Diagrama de Bode - Conversor SEPIC');
+grid on;
+hold on;
+
+
+num = [(Vi+Vo)*(1-D)];
+den = [L1*C1 (L1+L2)/R (1-D)^2] 
+sys2 = tf([num], [den]);
+
+figure(3)
+bode(sys2);
+title('Diagrama de Bode - Conversor SEPIC');
+grid on;
+hold on;
+
+% closed-loop frequency
+T1 = 1; Gz1=c2d(sys0,T1); [Gm1,Pm1] = margin(Gz1);
+Cz1 = feedback(Gz1,1);
+
+T2 = 0.1; Gz2 = c2d(sys1,T2); [Gm2,Pm2] = margin(Gz2);
+Cz2 = feedback(Gz2,1);
+
+figure(3), bode(Cz1,'--k',Cz2,'-k'), axis([0.25 2.5 -225 10]), grid
+% Plot the step response
+figure(4), step(Cz1,'--k',Cz2,'-k'), axis([0 20 0 1.5]), grid
+% List the step response and margin parameters
+StepT1=stepinfo(Cz1),Pm1,Gm1=20*log10(Gm1)%Convert to dB
+StepT2=stepinfo(Cz2),Pm2,Gm2=20*log10(Gm2)%Convert to dB
+
+
+
