@@ -1,195 +1,129 @@
 %% ========================================================================
-%  Cascade Control of Buck Converter
-%  Inner: Current Loop (already designed)
-%  Outer: Voltage Loop (designed here)
-%  IEEE-style plots for publication
-% ========================================================================
-
 clear; close all; clc;
 
-%% 1. System Parameters (from previous images)
+%% 1. System Parameters
 Vin = 100;      % V
 Ro = 6;         % Ohm
 Lo = 2e-3;      % H
 Co = 10e-6;     % F
 fs = 40e3;      % Hz
-ki = 0.33;      % V/A (current sensor gain)
-kv = 0.055;     % voltage sensor gain (3.3V/60V)
-kpwm = 1;       % modulator gain
 
-%% 2. Current Loop Design (from previous data)
+% Ganhos de Sensores e PWM
+ki = 0.33;      % V/A (Sensor de Corrente)
+kv = 0.055;     % V/V (Sensor de Tensão: 3.3V / 60V)
+kpwm = 1;       % Ganho do Modulador
+
 s = tf('s');
-% Plant current: Gid = Vin / (s*Lo)
-Gid = Vin / (s * Lo);
 
-% Current compensator (lead) parameters from previous design
-wci = 2*pi*2000;    % crossover frequency 2kHz
-wzi = 3152;         % zero frequency (rad/s)
-kci = 1.758;        % compensator gain
+%% 2. Inner Loop: Current Control 
+
+Gid = Vin / (s*Lo + Ro/(1 + s*Ro*Co));
+% Especificações de Corrente
+fci = 2000;             % Crossover 2kHz
+wci = 2*pi*fci;
+Mphi_i = 60 * pi/180;   % Margem de fase 60 graus
+
+% Sintonia do Compensador Ci(s)
+[mag_i, phase_i] = bode(Gid * ki * kpwm, wci);
+mag_i = squeeze(mag_i); phase_i = squeeze(phase_i);
+
+
+% wz_i é o omega do zero do controlador
+wzi = wci / tan(Mphi_i - pi/2 - deg2rad(phase_i));
+kci = wci / (mag_i * sqrt(wci^2 + wzi^2));
 Ci = kci * (s + wzi) / s;
 
-% Current open-loop transfer function
-FTLA_nci = Gid * ki * kpwm;
-FTLA_ci = FTLA_nci * Ci;
+tau_i = 1 / wzi;           % Constante de tempo (s)
 
-% Current closed-loop transfer function
-FTMF_i = feedback(FTLA_ci, 1);
+% Malha Aberta e Fechada de Corrente
+FTLA_i = Gid * ki * kpwm * Ci;
 
-% Verify current loop performance
-[Gm_i, Pm_i, ~, ~] = margin(FTLA_ci);
-fprintf('=== Current Loop Performance ===\n');
-fprintf('Crossover frequency: %.1f Hz\n', wci/(2*pi));
-fprintf('Phase margin: %.2f deg\n', Pm_i);
-fprintf('Gain margin: %.2f dB\n', 20*log10(Gm_i));
-fprintf('================================\n\n');
+% FTMF_i = feedback(FTLA_i, 1)
+FTMF_i = Ci * kpwm * Gid / ( 1 + ki * (Ci * kpwm * Gid)) ;
+[mag_ftmf_i, phase_ftmf_i] = bode(FTMF_i, wzi);
+mag_ftmf_i = squeeze(mag_ftmf_i); phase_ftmf_i = squeeze(phase_ftmf_i);
 
-%% 3. Voltage Plant (Gvi)
-% Gvi(s) = Ro / (s*Ro*Co + 1)
+
+%% 3. Outer Loop: Voltage Control (Cascaded)
+%%Projeto da Malha Externa (Tensão)
+% Planta de Tensão: Gvi(s) = Vo(s) / iL(s)
 Gvi = Ro / (s * Ro * Co + 1);
 
-%% 4. Voltage Open-Loop without compensator
-% FTLA_ncv = Gvi * kv * FTMF_i
-FTLA_ncv = Gvi * kv * FTMF_i;
+fcv = 200;                      % Frequência de cruzamento desejada (Hz)
+omega_cv = 2 * pi * fcv;
+wcv = 2*pi*fcv;       % Frequência de cruzamento (rad/s)
+Mphi_v = 90 * pi/180;           % Margem de Fase (rad)
 
-%% 5. Voltage Loop Specifications
-fcv = 200;          % Hz (crossover frequency)
-wcv = 2*pi*fcv;     % rad/s
-Mphiv = 90 * pi/180; % desired phase margin (90°)
 
-% Phase of FTLA_ncv at wcv
-[mag_ncv, phase_ncv] = bode(FTLA_ncv, wcv);
-phase_ncv_deg = phase_ncv;
+FTLA_ncv = Gvi * kv * FTMF_i;   % Malha aberta não compensada
+[mag_v, phase_v] = bode(FTLA_ncv, omega_cv);
+mag_v = squeeze(mag_v); phase_v = squeeze(phase_v);
+ 
+% Cálculo do zero do controlador (ωz)
+stan_arg_v = tan(Mphi_v - pi/2 - phase_v);
+wzv = omega_cv / stan_arg_v
+kcv = wcv / (mag_v * sqrt(wcv^2 + wzv^2));
+tau_v = 1 / wzv
 
-% Required phase lead
-phi_lead_v = rad2deg(Mphiv) - 90 - phase_ncv_deg;
-phi_lead_v_rad = deg2rad(phi_lead_v);
 
-% Zero frequency of voltage compensator
-wzv = wcv / tan(phi_lead_v_rad + pi/2);
-tau_v = 1/wzv;      % time constant (s)
-
-% Gain at crossover frequency
-kcv = wcv / (mag_ncv * sqrt(wzv^2 + wcv^2));
-
-%% 6. Voltage Compensator (lead)
 Cv = kcv * (s + wzv) / s;
 
-%% 7. Voltage Open-Loop Compensated
-FTLA_cv = FTLA_ncv * Cv;
+% Cálculo do Zero e Tau de Tensão
+omega_zv = omega_cv / tan(Mphi_v - pi/2 - deg2rad(phase_v));
+tau_v = 1 / omega_zv;           % Constante de tempo (s)
+kc_v = omega_cv / (mag_v * sqrt(omega_cv^2 + omega_zv^2));
 
-%% 8. Voltage Closed-Loop Transfer Function
-FTMF_v = feedback(FTLA_cv, 1);
+fprintf('--- PARÂMETROS DA MALHA DE CORRENTE ---\n');
+fprintf('w_ci (Crossover): %.2f rad/s\n', wci);
+fprintf('w_zi (Zero):      %.2f rad/s\n', wzi);
+fprintf('tau_i:            %.4e s\n', tau_i);
+fprintf('kc_i:             %.4f\n\n', kci);
 
-%% 9. Performance Analysis
-[Gm_v, Pm_v, ~, ~] = margin(FTLA_cv);
+fprintf('--- PARÂMETROS DA MALHA DE TENSÃO ---\n');
+fprintf('w_cv (Crossover): %.2f rad/s\n', wcv);
+fprintf('w_zv (Zero):      %.2f rad/s\n', omega_zv);
+fprintf('tau_v:            %.4e s\n', tau_v);
+fprintf('kc_v:             %.4f\n\n', kc_v);
 
-fprintf('=== Voltage Loop Performance ===\n');
-fprintf('Crossover frequency: %.1f Hz\n', fcv);
-fprintf('Phase margin: %.2f deg\n', Pm_v);
-fprintf('Gain margin: %.2f dB\n', 20*log10(Gm_v));
-fprintf('Zero frequency wzv: %.2f rad/s (tau = %.2f us)\n', wzv, tau_v*1e6);
-fprintf('Compensator gain kcv: %.3f\n', kcv);
-fprintf('================================\n\n');
 
-%% 10. Time-Domain Simulation
-t = 0:1e-5:5e-3;    % 5ms simulation
-% Step response (output voltage)
-[Vout, t_out] = step(FTMF_v, t);
-% Step response (inductor current)
-[I_L, t_i] = step(FTMF_i, t);
+% Malha Aberta e Fechada de Tensão (Cascata Completa)
+FTLA_v = FTLA_ncv * Cv;
+FTMF_v = feedback(FTLA_v, 1);
 
-%% 11. IEEE-Style Plots
-% Color scheme for publication
-blue = [0, 0.4470, 0.7410];
-red = [0.8500, 0.3250, 0.0980];
-green = [0.4660, 0.6740, 0.1880];
+%% 4. Corrected Plotting Logic (The "IEEE Fix")
+t = 0:1e-6:0.03; % 30ms simulation
+blue = [0, 0.447, 0.741]; red = [0.85, 0.325, 0.098];
 
-% -------------------------------------------------
-% Figure 1: Bode Plots - Current and Voltage Loops
-% -------------------------------------------------
-figure('Color', 'white', 'Position', [100, 100, 900, 700]);
+% --- Figure 1: Step Responses (Corrected Syntax) ---
+figure('Color', 'w', 'Name', 'Step Responses');
 
-% Current loop Bode
+% Current Step
+[y_i, t_i] = step(FTMF_i, t);
 subplot(2,1,1);
-bode(FTLA_ci, {2*pi*100, 2*pi*20000}, 'LineWidth', 1.5, 'Color', blue);
-grid on;
-title('(a) Current Loop - Open-Loop Transfer Function', 'FontSize', 11);
-legend('FTLA_{ci}(s)', 'Location', 'southwest');
+plot(t_i*1e3, y_i, 'LineWidth', 2, 'Color', blue); % LineWidth works here!
+grid on; ylabel('Current (p.u.)'); title('Current Loop Step Response');
 
-% Voltage loop Bode
+% Voltage Step
+[y_v, t_v] = step(FTMF_v, t);
 subplot(2,1,2);
-bode(FTLA_cv, {2*pi*10, 2*pi*2000}, 'LineWidth', 1.5, 'Color', red);
-grid on;
-title('(b) Voltage Loop - Open-Loop Transfer Function', 'FontSize', 11);
-legend('FTLA_{cv}(s)', 'Location', 'southwest');
+plot(t_v*1e3, y_v, 'LineWidth', 2, 'Color', red);
+grid on; ylabel('Voltage (p.u.)'); xlabel('Time (ms)');
+title('Voltage Loop Step Response (Cascaded)');
 
-% -------------------------------------------------
-% Figure 2: Step Responses (Current and Voltage)
-% -------------------------------------------------
-figure('Color', 'white', 'Position', [100, 100, 900, 700]);
+% --- Figure 2: Bode Plots (Corrected Syntax) ---
+figure('Color', 'w', 'Name', 'Bode Comparison');
+
+% Extracting data for manual plotting to avoid 'LineWidth' errors in bode()
+[magI, phaseI, wI] = bode(FTLA_i, {2*pi*10, 2*pi*20000});
+[magV, phaseV, wV] = bode(FTLA_v, {2*pi*10, 2*pi*20000});
 
 subplot(2,1,1);
-plot(t_i*1e3, I_L, 'LineWidth', 1.5, 'Color', blue);
-grid on;
-xlabel('Time (ms)', 'FontSize', 11);
-ylabel('Inductor Current (A)', 'FontSize', 11);
-title('(a) Current Loop Step Response', 'FontSize', 11);
-axis([0 2 0 1.2]);
-hold on;
-plot([0 2], [1 1], 'k--', 'LineWidth', 0.8);
-legend('I_L(t)', 'Reference', 'Location', 'southeast');
+semilogx(wI/(2*pi), 20*log10(squeeze(magI)), 'Color', blue, 'LineWidth', 2); hold on;
+semilogx(wV/(2*pi), 20*log10(squeeze(magV)), 'Color', red, 'LineWidth', 2);
+grid on; ylabel('Magnitude (dB)'); title('Bode Magnitude Comparison');
+legend('Current Loop', 'Voltage Loop');
 
 subplot(2,1,2);
-plot(t_out*1e3, Vout, 'LineWidth', 1.5, 'Color', red);
-grid on;
-xlabel('Time (ms)', 'FontSize', 11);
-ylabel('Output Voltage (V)', 'FontSize', 11);
-title('(b) Voltage Loop Step Response', 'FontSize', 11);
-axis([0 5 0 1.2]);
-hold on;
-plot([0 5], [1 1], 'k--', 'LineWidth', 0.8);
-legend('V_o(t)', 'Reference', 'Location', 'southeast');
-
-% -------------------------------------------------
-% Figure 3: Combined Bode (Comparison)
-% -------------------------------------------------
-figure('Color', 'white', 'Position', [100, 100, 900, 500]);
-bode(FTLA_ci, FTLA_cv, {2*pi*10, 2*pi*20000});
-grid on;
-title('Open-Loop Bode Comparison: Current vs. Voltage Loops', 'FontSize', 12);
-legend('Current Loop (FTLA_{ci})', 'Voltage Loop (FTLA_{cv})', 'Location', 'southwest');
-
-% -------------------------------------------------
-% Figure 4: Cascaded Response (Output Voltage)
-% -------------------------------------------------
-figure('Color', 'white', 'Position', [100, 100, 600, 400]);
-plot(t_out*1e3, Vout, 'LineWidth', 2, 'Color', green);
-grid on;
-xlabel('Time (ms)', 'FontSize', 12);
-ylabel('Output Voltage (p.u.)', 'FontSize', 12);
-title('Cascaded Voltage Control - Step Response', 'FontSize', 12);
-axis([0 5 0 1.2]);
-hold on;
-plot([0 5], [1 1], 'k--', 'LineWidth', 1);
-text(3.5, 0.85, ['Settling time: ', num2str(t_out(find(Vout>0.98,1,'first'))*1000, '%.1f'), ' ms'], 'FontSize', 10);
-text(3.5, 0.75, ['Overshoot: ', num2str((max(Vout)-1)*100, '%.1f'), ' %'], 'FontSize', 10);
-
-%% 11. Additional Metrics for Publication
-fprintf('\n=== Performance Metrics for Publication ===\n');
-% Settling time (2%)
-idx_settle = find(abs(Vout-1) < 0.02, 1, 'first');
-settling_time = t_out(idx_settle)*1000;
-overshoot = (max(Vout)-1)*100;
-rise_time = t_out(find(Vout>0.9,1,'first'))*1000;
-
-fprintf('Settling time (2%%): %.2f ms\n', settling_time);
-fprintf('Overshoot: %.2f %%\n', overshoot);
-fprintf('Rise time (10-90%%): %.2f ms\n', rise_time);
-fprintf('Current loop bandwidth: %.1f Hz\n', wci/(2*pi));
-fprintf('Voltage loop bandwidth: %.1f Hz\n', fcv);
-fprintf('============================================\n');
-
-%% 12. Export Data for Publication (optional)
-% Uncomment to save figures as EPS or PNG
-% saveas(gcf, 'voltage_step_response.eps', 'epsc');
-% saveas(gcf, 'bode_comparison.eps', 'epsc');
+semilogx(wI/(2*pi), squeeze(phaseI), 'Color', blue, 'LineWidth', 2); hold on;
+semilogx(wV/(2*pi), squeeze(phaseV), 'Color', red, 'LineWidth', 2);
+grid on; ylabel('Phase (deg)'); xlabel('Frequency (Hz)');
